@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """
-protectme_norm.py
+protectme.py - injecteur / retrait d'un bloc de vérification d'intégrité (version bytes)
 
 Usage:
-  python protectme_norm.py <local.py> <remote_raw_url>
-  python protectme_norm.py --remove <local.py>
-  python protectme_norm.py --verbose <local.py> <remote_raw_url>
-
-Méthode: normalisation (BOM, CRLF -> LF, trimming EOL spaces) puis SHA256 comparison.
+  python protectme.py <fichier_local.py> <url_fichier_distant>
+  python protectme.py --remove <fichier_local.py>
+  python protectme.py --verbose <fichier_local.py> <url_fichier_distant>
 """
-import sys, os, re, hashlib, urllib.request, urllib.parse
+from __future__ import annotations
+import sys
+import os
+import re
+import hashlib
+import urllib.request
+import urllib.parse
 
 MARKER_START = b"# -- BEGIN INTEGRITY PROTECTOR v2 --\n"
 MARKER_END   = b"# -- END INTEGRITY PROTECTOR v2 --\n"
 
+# Corps du protecteur en bytes (on utilisera .replace sur les tokens bytes)
 PROTECTOR_BODY = (
     b"# Ceci est un bloc automatique de verification d'integrite.\n"
+    b"# Il retire ce bloc avant de comparer au fichier distant.\n"
     b"import sys, hashlib, urllib.request\n\n"
     b"def _integrity_fail(msg):\n"
     b"    try:\n"
@@ -24,12 +30,9 @@ PROTECTOR_BODY = (
     b"        pass\n"
     b"    sys.exit(1)\n\n"
     b"def _normalize_bytes(b):\n"
-    b"    # retire BOM\n"
     b"    if b.startswith(b'\\xef\\xbb\\xbf'):\n"
     b"        b = b[3:]\n"
-    b"    # convertir CRLF ou CR to LF\n"
     b"    b = b.replace(b'\\r\\n', b'\\n').replace(b'\\r', b'\\n')\n"
-    b"    # retirer espaces de fin de ligne\n"
     b"    lines = b.split(b'\\n')\n"
     b"    lines = [ln.rstrip() for ln in lines]\n"
     b"    return b'\\n'.join(lines)\n\n"
@@ -39,8 +42,8 @@ PROTECTOR_BODY = (
     b"            data = f.read()\n"
     b"    except Exception as e:\n"
     b"        _integrity_fail('Impossible de lire le fichier local: ' + str(e))\n"
-    b"    s = " + repr(MARKER_START) + b"\n"
-    b"    e = " + repr(MARKER_END) + b"\n"
+    b"    s = b'__MARKER_START__'\n"
+    b"    e = b'__MARKER_END__'\n"
     b"    si = data.find(s)\n"
     b"    ei = data.find(e)\n"
     b"    if si != -1 and ei != -1 and ei > si:\n"
@@ -50,8 +53,8 @@ PROTECTOR_BODY = (
     b"    try:\n"
     b"        req = urllib.request.Request(url, headers={'User-Agent': 'IntegrityChecker/1.0'})\n"
     b"        with urllib.request.urlopen(req, timeout=10) as r:\n"
-    b"            rb = r.read()\n"
-    b"            return _normalize_bytes(rb)\n"
+    b"            raw = r.read()\n"
+    b"            return _normalize_bytes(raw)\n"
     b"    except Exception as e:\n"
     b"        _integrity_fail('Impossible de recuperer le fichier distant: ' + str(e))\n\n"
     b"def _sha256(b):\n"
@@ -62,10 +65,10 @@ PROTECTOR_BODY = (
     b"    if _sha256(local) != _sha256(remote):\n"
     b"        _integrity_fail('Contenu local different du fichier distant. Execution interrompue.')\n"
     b"\n"
-    b"_check_remote('%REMOTE_URL%')\n"
+    b"_check_remote('__REMOTE_URL__')\n"
 )
 
-def normalize_github_raw(url):
+def normalize_github_raw(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     if "github.com" in parsed.netloc:
         path = parsed.path
@@ -80,30 +83,52 @@ def normalize_github_raw(url):
             return f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{rest}"
     return url
 
-def sha256_bytes(b): return hashlib.sha256(b).hexdigest()
+def sha256_bytes(b: bytes) -> str:
+    return hashlib.sha256(b).hexdigest()
 
-def inject(local, remote_url, verbose=False):
-    if not os.path.exists(local):
-        print("Fichier local introuvable:", local); return 2
+def fetch_url_bytes(url: str, timeout: int = 10):
+    req = urllib.request.Request(url, headers={"User-Agent": "IntegrityChecker/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read(), (r.getcode() if hasattr(r, "getcode") else 200)
+
+def inject(local_path: str, remote_url: str, verbose: bool = False) -> int:
+    if not os.path.exists(local_path):
+        print(f"[ERREUR] Fichier local introuvable: {local_path}")
+        return 2
+
     remote_url = normalize_github_raw(remote_url)
-    # build protector bytes
-    body = PROTECTOR_BODY.replace(b"%REMOTE_URL%", remote_url.encode("utf-8"))
+    if verbose:
+        print("[DEBUG] URL utilisée :", remote_url)
+
+    # construire le bloc protecteur bytes
+    body = PROTECTOR_BODY.replace(b"__REMOTE_URL__", remote_url.encode("utf-8"))
+    body = body.replace(b"__MARKER_START__", MARKER_START.strip()).replace(b"__MARKER_END__", MARKER_END.strip())
     protector = MARKER_START + body + MARKER_END
 
-    with open(local, "rb") as f: orig = f.read()
-    # if already present, replace whole existing marker block
-    si = orig.find(MARKER_START); ei = orig.find(MARKER_END, si) if si!=-1 else -1
+    with open(local_path, "rb") as f:
+        orig = f.read()
+
+    # trouver si déjà présent
+    si = orig.find(MARKER_START)
+    ei = orig.find(MARKER_END, si) if si != -1 else -1
+
     if si != -1 and ei != -1:
+        # remplacer l'ancien bloc complet
+        if ei <= si:
+            print("[ERREUR] Marqueurs incohérents dans le fichier local.") 
+            return 4
         new = orig[:si] + protector + orig[ei + len(MARKER_END):]
         action = "remplacé"
     else:
-        # insert after shebang/encoding if possible
+        # insertion après shebang + ligne d'encodage si possible (en tentant decode utf-8)
         try:
             text = orig.decode("utf-8", errors="surrogateescape")
             lines = text.splitlines(True)
             insert_at = 0
-            if lines and lines[0].startswith("#!"): insert_at=1
-            if insert_at < len(lines) and re.match(r"\s*#.*coding[:=]\s*[-\w.]+", lines[insert_at]): insert_at+=1
+            if lines and lines[0].startswith("#!"):
+                insert_at = 1
+            if insert_at < len(lines) and re.match(r"\s*#.*coding[:=]\s*[-\w.]+", lines[insert_at]):
+                insert_at += 1
             prefix = "".join(lines[:insert_at]).encode("utf-8")
             suffix = "".join(lines[insert_at:]).encode("utf-8")
             new = prefix + protector + suffix
@@ -111,66 +136,97 @@ def inject(local, remote_url, verbose=False):
             new = protector + orig
         action = "inséré"
 
-    # write backup + new
-    bak = local + ".bak"
+    # sauvegarde
+    backup = local_path + ".bak"
     try:
-        with open(bak, "wb") as b: b.write(orig)
+        with open(backup, "wb") as b:
+            b.write(orig)
     except Exception as e:
-        print("Impossible d'ecrire backup:", e)
-    with open(local, "wb") as w: w.write(new)
-    print("[OK] Bloc protecteur", action, "dans", local, "Sauvegarde:", bak)
+        print(f"[ATTENTION] Impossible d'écrire la sauvegarde {backup}: {e}")
+
+    try:
+        with open(local_path, "wb") as w:
+            w.write(new)
+    except Exception as e:
+        print(f"[ERREUR] Impossible d'écrire le fichier modifié: {e}")
+        return 3
+
+    print(f"[OK] Bloc protecteur {action} dans {local_path}. Sauvegarde: {backup}")
     print("-> URL utilisée (normalisée si applicable):", remote_url)
+
     if verbose:
-        # compute normalized hashes for debugging
-        local_norm = remove_block_and_normalize(new)
+        # pour debug : afficher SHA256 normalisés local (sans bloc) et remote
+        local_without = remove_block_bytes(new)
         try:
-            req = urllib.request.Request(remote_url, headers={"User-Agent":"IntegrityChecker/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                remote_raw = r.read()
+            remote_raw, status = fetch_url_bytes(remote_url)
+            remote_norm = normalize_bytes(remote_raw)
+            print(f"[DEBUG] remote HTTP status: {status}, remote size: {len(remote_raw)} bytes")
         except Exception as e:
-            print("Erreur fetch remote:", e); return 0
-        remote_norm = normalize_bytes(remote_raw)
-        print("[DEBUG] sha256 local (norm):", sha256_bytes(local_norm))
-        print("[DEBUG] sha256 remote (norm):", sha256_bytes(remote_norm))
+            print(f"[DEBUG] fetch remote failed: {e}")
+            return 0
+        print(f"[DEBUG] sha256 local (norm): {sha256_bytes(local_without)}")
+        print(f"[DEBUG] sha256 remote (norm): {sha256_bytes(remote_norm)}")
     return 0
 
-def remove_block_and_normalize(data_bytes):
-    si = data_bytes.find(MARKER_START)
-    if si == -1: return normalize_bytes(data_bytes)
-    ei = data_bytes.find(MARKER_END, si)
-    if ei == -1: return normalize_bytes(data_bytes)
-    pure = data_bytes[:si] + data_bytes[ei + len(MARKER_END):]
+def remove_block_bytes(data: bytes) -> bytes:
+    si = data.find(MARKER_START)
+    if si == -1:
+        return normalize_bytes(data)
+    ei = data.find(MARKER_END, si)
+    if ei == -1:
+        return normalize_bytes(data)
+    pure = data[:si] + data[ei + len(MARKER_END):]
     return normalize_bytes(pure)
 
-def normalize_bytes(b):
-    if b.startswith(b'\xef\xbb\xbf'): b = b[3:]
+def normalize_bytes(b: bytes) -> bytes:
+    if b.startswith(b'\xef\xbb\xbf'):
+        b = b[3:]
     b = b.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
     lines = b.split(b'\n')
     lines = [ln.rstrip() for ln in lines]
     return b'\n'.join(lines)
 
-def remove(local):
-    if not os.path.exists(local): print("Fichier local introuvable:", local); return 2
-    with open(local,"rb") as f: orig = f.read()
-    si = orig.find(MARKER_START); ei = orig.find(MARKER_END, si) if si!=-1 else -1
-    if si==-1 or ei==-1:
-        print("Aucun bloc protecteur detecte."); return 0
+def remove(local_path: str) -> int:
+    if not os.path.exists(local_path):
+        print(f"[ERREUR] Fichier local introuvable: {local_path}")
+        return 2
+    with open(local_path, "rb") as f:
+        orig = f.read()
+
+    si = orig.find(MARKER_START)
+    ei = orig.find(MARKER_END, si) if si != -1 else -1
+    if si == -1 or ei == -1:
+        print("[INFO] Aucun bloc protecteur détecté.")
+        return 0
+
     new = orig[:si] + orig[ei + len(MARKER_END):]
-    bak = local + ".bak_remove"
+
+    backup = local_path + ".bak_remove"
     try:
-        with open(bak,"wb") as b: b.write(orig)
+        with open(backup, "wb") as b:
+            b.write(orig)
     except Exception as e:
-        print("Impossible d'ecrire backup:", e)
-    with open(local,"wb") as w: w.write(new)
-    print("[OK] Bloc protecteur retire de", local, "Sauvegarde:", bak)
+        print(f"[ATTENTION] Impossible d'écrire la sauvegarde {backup}: {e}")
+
+    try:
+        with open(local_path, "wb") as w:
+            w.write(new)
+    except Exception as e:
+        print(f"[ERREUR] Impossible d'écrire le fichier modifié: {e}")
+        return 3
+
+    print(f"[OK] Bloc protecteur retiré de {local_path}. Sauvegarde: {backup}")
     return 0
 
 def main(argv):
-    if len(argv)==3 and argv[1]=="--remove": return remove(argv[2])
-    if len(argv)==4 and argv[1]=="--verbose": return inject(argv[2], argv[3], verbose=True)
-    if len(argv)!=3:
-        print(__doc__); return 1
+    if len(argv) == 3 and argv[1] == "--remove":
+        return remove(argv[2])
+    if len(argv) == 4 and argv[1] == "--verbose":
+        return inject(argv[2], argv[3], verbose=True)
+    if len(argv) != 3:
+        print(__doc__)
+        return 1
     return inject(argv[1], argv[2], verbose=False)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     sys.exit(main(sys.argv))
