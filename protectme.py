@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-protectme.py - injecteur HMAC corrigé (bytes-safe, markers complets)
+protectme.py - injecteur HMAC corrigé (safe string embedding)
 
 Usage:
   python protectme.py <local.py> <remote_raw_url>
@@ -10,76 +10,92 @@ Usage:
 from __future__ import annotations
 import os, sys, re, hashlib, hmac, urllib.request, urllib.parse, stat
 
-# MARKERS (avec newline final)
-MARKER_START = b"# -- BEGIN INTEGRITY PROTECTOR HMAC v1 --\n"
-MARKER_END   = b"# -- END INTEGRITY PROTECTOR HMAC v1 --\n"
+# MARKERS (texte)
+MARKER_START_TEXT = "# -- BEGIN INTEGRITY PROTECTOR HMAC v1 --\n"
+MARKER_END_TEXT   = "# -- END INTEGRITY PROTECTOR HMAC v1 --\n"
+
+# bytes versions (for searching in files)
+MARKER_START = MARKER_START_TEXT.encode("utf-8")
+MARKER_END = MARKER_END_TEXT.encode("utf-8")
 
 KEY_PATH = os.path.expanduser("~/.protectme_key")
 KEY_LEN = 32  # bytes
 
-# Protecteur (ASCII-only). Tokens: __HMAC__, __REMOTE_URL__, __KEY_PATH__, __MARKER_START__, __MARKER_END__
-PROTECTOR_BODY = (
-    b"# Protecteur HMAC (injected). No accents - ASCII only.\n"
-    b"import sys, hashlib, hmac, urllib.request\n\n"
-    b"def _norm(b):\n"
-    b"    if b.startswith(b'\\xef\\xbb\\xbf'): b = b[3:]\n"
-    b"    b = b.replace(b'\\r\\n', b'\\n').replace(b'\\r', b'\\n')\n"
-    b"    lines = b.split(b'\\n')\n"
-    b"    lines = [ln.rstrip() for ln in lines]\n"
-    b"    return b'\\n'.join(lines)\n\n"
-    b"def _read_local_without_block():\n"
-    b"    try:\n"
-    b"        with open(__file__, 'rb') as f: data = f.read()\n"
-    b"    except Exception as e:\n"
-    b"        sys.stderr.write('IMPOSSIBLE LIRE LOCAL: '+str(e)+'\\n'); sys.exit(1)\n"
-    b"    # use full markers (including newline)\n"
-    b"    s = b'__MARKER_START__'\n"
-    b"    e = b'__MARKER_END__'\n"
-    b"    si = data.find(s)\n"
-    b"    if si == -1:\n"
-    b"        return _norm(data)\n"
-    b"    ei = data.find(e, si)\n"
-    b"    if ei == -1:\n"
-    b"        # incomplete end marker -> treat as tamper\n"
-    b"        sys.stderr.write('INTEGRITY: end marker missing\\n'); sys.exit(1)\n"
-    b"    # remove entire block including both markers\n"
-    b"    return _norm(data[:si] + data[ei + len(e):])\n\n"
-    b"def _fetch_remote_norm(url):\n"
-    b"    try:\n"
-    b"        req = urllib.request.Request(url, headers={'User-Agent':'IntegrityChecker/1.0'})\n"
-    b"        with urllib.request.urlopen(req, timeout=10) as r:\n"
-    b"            raw = r.read()\n"
-    b"            return _norm(raw)\n"
-    b"    except Exception as e:\n"
-    b"        sys.stderr.write('IMPOSSIBLE FETCH REMOTE: '+str(e)+'\\n'); sys.exit(1)\n\n"
-    b"def _hmac_hex(key, b):\n"
-    b"    return hmac.new(key, b, hashlib.sha256).hexdigest()\n\n"
-    b"EXPECTED_HMAC = '__HMAC__'\n"
-    b"REMOTE_URL = '__REMOTE_URL__'\n"
-    b"KEY_PATH = '__KEY_PATH__'\n\n"
-    b"def _get_key():\n"
-    b"    try:\n"
-    b"        with open(KEY_PATH, 'rb') as f: return f.read()\n"
-    b"    except Exception:\n"
-    b"        return None\n\n"
-    b"def _check():\n"
-    b"    key = _get_key()\n"
-    b"    local_norm = _read_local_without_block()\n"
-    b"    if key:\n"
-    b"        h = _hmac_hex(key, local_norm)\n"
-    b"        if not hmac.compare_digest(h, EXPECTED_HMAC):\n"
-    b"            sys.stderr.write('\\n[INTEGRITY ALERT] HMAC mismatch (local vs embedded).\\n')\n"
-    b"            sys.exit(1)\n"
-    b"    else:\n"
-    b"        remote = _fetch_remote_norm(REMOTE_URL)\n"
-    b"        if hashlib.sha256(local_norm).hexdigest() != hashlib.sha256(remote).hexdigest():\n"
-    b"            sys.stderr.write('\\n[INTEGRITY ALERT] local != remote (no key fallback).\\n')\n"
-    b"            sys.exit(1)\n"
-    b"\n"
-    b"_check()\n"
-)
+# Protecteur construit comme str (ASCII-only in body lines).
+# On utilise "__MARKER_START_TEXT__" et "__MARKER_END_TEXT__" placeholders,
+# puis on génère protector_str et on encode en utf-8 avant écriture.
+PROTECTOR_TEMPLATE_STR = """{marker_start}
+# Protecteur HMAC (injected). ASCII-only body.
+import sys, hashlib, hmac, urllib.request
 
-# ---------- helper functions for the injector script ----------
+def _norm(b):
+    if b.startswith(b'\\xef\\xbb\\xbf'):
+        b = b[3:]
+    b = b.replace(b'\\r\\n', b'\\n').replace(b'\\r', b'\\n')
+    lines = b.split(b'\\n')
+    lines = [ln.rstrip() for ln in lines]
+    return b'\\n'.join(lines)
+
+def _read_local_without_block():
+    try:
+        with open(__file__, 'rb') as f:
+            data = f.read()
+    except Exception as e:
+        sys.stderr.write('IMPOSSIBLE LIRE LOCAL: ' + str(e) + "\\n")
+        sys.exit(1)
+    # use marker texts and encode to bytes
+    s = "{marker_start_text}".encode('utf-8')
+    e = "{marker_end_text}".encode('utf-8')
+    si = data.find(s)
+    if si == -1:
+        return _norm(data)
+    ei = data.find(e, si)
+    if ei == -1:
+        sys.stderr.write('INTEGRITY: end marker missing\\n')
+        sys.exit(1)
+    return _norm(data[:si] + data[ei + len(e):])
+
+def _fetch_remote_norm(url):
+    try:
+        req = urllib.request.Request(url, headers={{'User-Agent':'IntegrityChecker/1.0'}})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            raw = r.read()
+            return _norm(raw)
+    except Exception as e:
+        sys.stderr.write('IMPOSSIBLE FETCH REMOTE: ' + str(e) + "\\n")
+        sys.exit(1)
+
+def _hmac_hex(key, b):
+    return hmac.new(key, b, hashlib.sha256).hexdigest()
+
+EXPECTED_HMAC = "{hmac_expected}"
+REMOTE_URL = "{remote_url}"
+KEY_PATH = "{key_path}"
+
+def _get_key():
+    try:
+        with open(KEY_PATH, 'rb') as f:
+            return f.read()
+    except Exception:
+        return None
+
+def _check():
+    key = _get_key()
+    local_norm = _read_local_without_block()
+    if key:
+        h = _hmac_hex(key, local_norm)
+        if not hmac.compare_digest(h, EXPECTED_HMAC):
+            sys.stderr.write('\\n[INTEGRITY ALERT] HMAC mismatch (local vs embedded).\\n')
+            sys.exit(1)
+    else:
+        remote = _fetch_remote_norm(REMOTE_URL)
+        if hashlib.sha256(local_norm).hexdigest() != hashlib.sha256(remote).hexdigest():
+            sys.stderr.write('\\n[INTEGRITY ALERT] local != remote (no key fallback).\\n')
+            sys.exit(1)
+
+_check()
+{marker_end}
+"""
 
 def normalize_github_raw(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
@@ -98,11 +114,13 @@ def normalize_github_raw(url: str) -> str:
 
 def ensure_key():
     if os.path.exists(KEY_PATH):
-        with open(KEY_PATH, "rb") as f: return f.read()
+        with open(KEY_PATH, "rb") as f:
+            return f.read()
     key = os.urandom(KEY_LEN)
-    with open(KEY_PATH, "wb") as f: f.write(key)
+    with open(KEY_PATH, "wb") as f:
+        f.write(key)
     try:
-        os.chmod(KEY_PATH, stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(KEY_PATH, stat.S_IRUSR | stat.S_IWUSR)  # chmod 600
     except Exception:
         pass
     print(f"[INFO] Clé créée: {KEY_PATH} (chmod 600 recommandé)")
@@ -112,7 +130,8 @@ def compute_normalized_bytes_from_url(url: str):
     req = urllib.request.Request(url, headers={"User-Agent":"IntegrityChecker/1.0"})
     with urllib.request.urlopen(req, timeout=10) as r:
         data = r.read()
-    if data.startswith(b'\xef\xbb\xbf'): data = data[3:]
+    if data.startswith(b'\xef\xbb\xbf'):
+        data = data[3:]
     data = data.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
     lines = data.split(b'\n')
     lines = [ln.rstrip() for ln in lines]
@@ -120,49 +139,61 @@ def compute_normalized_bytes_from_url(url: str):
 
 def inject(local_path: str, remote_url: str, verbose: bool=False) -> int:
     if not os.path.exists(local_path):
-        print("[ERREUR] fichier introuvable:", local_path); return 2
+        print("[ERREUR] fichier introuvable:", local_path)
+        return 2
 
     remote_url = normalize_github_raw(remote_url)
     try:
         remote_norm = compute_normalized_bytes_from_url(remote_url)
     except Exception as e:
-        print("[ERREUR] impossible de fetch remote:", e); return 4
+        print("[ERREUR] impossible de fetch remote:", e)
+        return 4
 
     key = ensure_key()
     h = hmac.new(key, remote_norm, hashlib.sha256).hexdigest()
 
-    # replace tokens in protector body (use full markers, not stripped)
-    body = PROTECTOR_BODY.replace(b"__HMAC__", h.encode("ascii"))
-    body = body.replace(b"__REMOTE_URL__", remote_url.encode("utf-8"))
-    body = body.replace(b"__KEY_PATH__", KEY_PATH.encode("utf-8"))
-    body = body.replace(b"__MARKER_START__", MARKER_START).replace(b"__MARKER_END__", MARKER_END)
-    protector = MARKER_START + body + MARKER_END
+    # build protector_str safely: marker texts inserted as plain text (quoted within template)
+    protector_str = PROTECTOR_TEMPLATE_STR.format(
+        marker_start=MARKER_START_TEXT,
+        marker_end=MARKER_END_TEXT,
+        marker_start_text=MARKER_START_TEXT.replace('"', '\\"'),
+        marker_end_text=MARKER_END_TEXT.replace('"', '\\"'),
+        hmac_expected=h,
+        remote_url=remote_url.replace('"', '\\"'),
+        key_path=KEY_PATH.replace('"', '\\"')
+    )
 
+    protector_bytes = protector_str.encode("utf-8")
+
+    # read original file bytes
     with open(local_path, "rb") as f:
         orig = f.read()
 
+    # search for existing markers (byte search)
     si = orig.find(MARKER_START)
     ei = orig.find(MARKER_END, si) if si != -1 else -1
 
     if si != -1 and ei != -1:
         if ei <= si:
-            print("[ERREUR] marqueurs incoherents"); return 4
-        new = orig[:si] + protector + orig[ei + len(MARKER_END):]
+            print("[ERREUR] marqueurs incoherents")
+            return 4
+        new = orig[:si] + protector_bytes + orig[ei + len(MARKER_END):]
         action = "remplacé"
     else:
-        # insertion after shebang / encoding lines if possible
+        # insert after shebang / encoding line if any
         try:
             text = orig.decode("utf-8", errors="surrogateescape")
             lines = text.splitlines(True)
             insert_at = 0
-            if lines and lines[0].startswith("#!"): insert_at = 1
+            if lines and lines[0].startswith("#!"):
+                insert_at = 1
             if insert_at < len(lines) and re.match(r"\s*#.*coding[:=]\s*[-\w.]+", lines[insert_at]):
                 insert_at += 1
             prefix = "".join(lines[:insert_at]).encode("utf-8")
             suffix = "".join(lines[insert_at:]).encode("utf-8")
-            new = prefix + protector + suffix
+            new = prefix + protector_bytes + suffix
         except Exception:
-            new = protector + orig
+            new = protector_bytes + orig
         action = "inséré"
 
     backup = local_path + ".bak"
@@ -176,7 +207,8 @@ def inject(local_path: str, remote_url: str, verbose: bool=False) -> int:
         with open(local_path, "wb") as w:
             w.write(new)
     except Exception as e:
-        print("[ERREUR] impossible d'ecrire fichier modifié:", e); return 3
+        print("[ERREUR] impossible d'ecrire fichier modifié:", e)
+        return 3
 
     print(f"[OK] Bloc protecteur {action} dans {local_path}. Sauvegarde: {backup}")
     print("-> URL utilisée (normalisée si applicable):", remote_url)
@@ -187,23 +219,28 @@ def inject(local_path: str, remote_url: str, verbose: bool=False) -> int:
 
 def remove(local_path: str) -> int:
     if not os.path.exists(local_path):
-        print("[ERREUR] fichier introuvable:", local_path); return 2
+        print("[ERREUR] fichier introuvable:", local_path)
+        return 2
     with open(local_path, "rb") as f:
         orig = f.read()
     si = orig.find(MARKER_START)
     ei = orig.find(MARKER_END, si) if si != -1 else -1
     if si == -1 or ei == -1:
-        print("[INFO] Aucun bloc protecteur détecté."); return 0
+        print("[INFO] Aucun bloc protecteur détecté.")
+        return 0
     new = orig[:si] + orig[ei + len(MARKER_END):]
     bak = local_path + ".bak_remove"
     try:
-        with open(bak, "wb") as b: b.write(orig)
+        with open(bak, "wb") as b:
+            b.write(orig)
     except Exception as e:
         print("[ATTENTION] impossible d'ecrire backup:", e)
     try:
-        with open(local_path, "wb") as w: w.write(new)
+        with open(local_path, "wb") as w:
+            w.write(new)
     except Exception as e:
-        print("[ERREUR] impossible d'ecrire fichier modifié:", e); return 3
+        print("[ERREUR] impossible d'ecrire fichier modifié:", e)
+        return 3
     print("[OK] Bloc protecteur retiré. Sauvegarde:", bak)
     return 0
 
@@ -213,7 +250,8 @@ def main(argv):
     if len(argv) == 4 and argv[1] == "--verbose":
         return inject(argv[2], argv[3], verbose=True)
     if len(argv) != 3:
-        print(__doc__); return 1
+        print(__doc__)
+        return 1
     return inject(argv[1], argv[2], verbose=False)
 
 if __name__ == "__main__":
