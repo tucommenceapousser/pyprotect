@@ -32,7 +32,7 @@ def _read_local_without_block():
             data = f.read()
     except Exception as e:
         # si on ne peut pas lire le fichier local, on bloque par prudence
-        _integrity_fail("Impossible de lire le fichier local: {}".format(e))
+        _integrity_fail("Impossible de lire le fichier local: {{}}".format(e))
     start = b"{start_b}"
     end = b"{end_b}"
     si = data.find(start)
@@ -46,11 +46,11 @@ def _read_local_without_block():
 
 def _fetch_remote(url, timeout=6):
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "IntegrityChecker/1.0"})
+        req = urllib.request.Request(url, headers={{"User-Agent": "IntegrityChecker/1.0"}})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read()
     except Exception as e:
-        _integrity_fail("Impossible de récupérer le fichier distant ({}).".format(e))
+        _integrity_fail("Impossible de récupérer le fichier distant ({{}}).".format(e))
 
 def _sha256(b):
     import hashlib
