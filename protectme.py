@@ -23,7 +23,7 @@ KEY_LEN = 32  # bytes
 
 # protecteur bytes template. __HMAC__ and __REMOTE_URL__ replaced at inject time.
 PROTECTOR_BODY = (
-    b"# Bloc protecteur HMAC: vérifie que le HMAC-SHA256(normalized_code) corresponde\n"
+    b"# Bloc protecteur HMAC: verifie que le HMAC-SHA256(normalized_code) corresponde\n"
     b"import sys, hashlib, hmac, urllib.request\n\n"
     b"def _norm(b):\n"
     b"    if b.startswith(b'\\xef\\xbb\\xbf'): b = b[3:]\n"
@@ -43,6 +43,7 @@ PROTECTOR_BODY = (
     b"    if si != -1 and ei != -1 and ei > si:\n"
     b"        data = data[:si] + data[ei + len(e):]\n"
     b"    return _norm(data)\n\n"
+    # reste identique...
     b"def _fetch_remote_norm(url):\n"
     b"    try:\n"
     b"        req = urllib.request.Request(url, headers={'User-Agent':'IntegrityChecker/1.0'})\n"
