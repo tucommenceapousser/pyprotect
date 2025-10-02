@@ -35,15 +35,16 @@ def _read_local_without_block():
             data = f.read()
     except Exception as e:
         _integrity_fail("Impossible de lire le fichier local: " + str(e))
-    start_bytes = "{start}".encode("utf-8")
-    end_bytes = "{end}".encode("utf-8")
+
+    start_bytes = b"# -- BEGIN INTEGRITY PROTECTOR v1 --"
+    end_bytes   = b"# -- END INTEGRITY PROTECTOR v1 --"
+
     si = data.find(start_bytes)
     ei = data.find(end_bytes)
     if si != -1 and ei != -1 and ei > si:
-        new = data[:si] + data[ei + len(end_bytes):]
-    else:
-        new = data
-    return new
+        # supprime le bloc inclus
+        return data[:si] + data[ei + len(end_bytes):]
+    return data
 
 def _fetch_remote(url, timeout=8):
     try:
