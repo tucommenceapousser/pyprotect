@@ -1,4 +1,4 @@
-# mon_script_original.py
+# example.py
 # ======= FICHIER ORIGINAL POUR DEMO =======
 # Héberge ce fichier (tel quel) sur une URL brute (ex: GitHub raw, raw.githack, gist, or a simple web server).
 # Ne pas y ajouter le bloc protecteur — il s'agit de la version *originale* que le protecteur téléchargera et comparera.
@@ -34,7 +34,7 @@ def compute_factorial(n: int) -> int:
 
 def main():
     # Petit scénario de démonstration
-    name = "DevDemo"
+    name = "trhacknon"
     try:
         n = int(sys.argv[1]) if len(sys.argv) > 1 else 5
     except Exception:
