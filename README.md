@@ -17,5 +17,5 @@ Le protecteur compare le code local* (hors bloc protecteur) avec le code distant
 ## Example
 
 ```bash
-python protectme.py example.py
+python protectme.py example.py https://raw.githubusercontent.com/tucommenceapousser/pyprotect/refs/heads/main/example.py
 ```
