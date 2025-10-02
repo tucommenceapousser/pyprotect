@@ -17,7 +17,57 @@ MARKER_START = "# -- BEGIN INTEGRITY PROTECTOR v1 --"
 MARKER_END   = "# -- END INTEGRITY PROTECTOR v1 --"
 
 # Template du bloc injecté. ATTENTION: ne pas utiliser des accolades {} non-échappées ici
-headers={{"User-Agent": "IntegrityChecker/1.0"}}
+PROTECTOR_TEMPLATE = r'''{start}
+# Ceci est un bloc ajouté automatiquement pour vérifier l'intégrité du fichier.
+# Il retire ce bloc avant de comparer au fichier distant.
+import sys, hashlib, urllib.request, time, os
+
+def _integrity_fail(msg):
+    try:
+        sys.stderr.write("\n[INTEGRITY ALERT] " + msg + "\n")
+    except Exception:
+        pass
+    sys.exit(1)
+
+def _read_local_without_block():
+    try:
+        with open(__file__, "rb") as f:
+            data = f.read()
+    except Exception as e:
+        _integrity_fail("Impossible de lire le fichier local: " + str(e))
+    start_bytes = "{start}".encode("utf-8")
+    end_bytes = "{end}".encode("utf-8")
+    si = data.find(start_bytes)
+    ei = data.find(end_bytes)
+    if si != -1 and ei != -1 and ei > si:
+        new = data[:si] + data[ei + len(end_bytes):]
+    else:
+        new = data
+    return new
+
+def _fetch_remote(url, timeout=8):
+    try:
+        req = urllib.request.Request(url, headers={{"User-Agent": "IntegrityChecker/1.0"}})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read()
+    except Exception as e:
+        _integrity_fail("Impossible de récupérer le fichier distant: " + str(e))
+
+def _sha256(b):
+    h = hashlib.sha256()
+    h.update(b)
+    return h.hexdigest()
+
+def _check():
+    url = "{remote_url}"
+    local_code = _read_local_without_block()
+    remote_code = _fetch_remote(url)
+    if _sha256(local_code) != _sha256(remote_code):
+        _integrity_fail("Contenu local différent du fichier distant. Execution interrompue.")
+
+_check()
+{end}
+'''
 
 def normalize_url(url):
     """
