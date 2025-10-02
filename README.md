@@ -13,3 +13,9 @@ Usage:
 
 Le protecteur compare le code local* (hors bloc protecteur) avec le code distant.
 *Le fichier distant doit contenir le code original sans bloc protecteur.
+
+## Example
+
+```bash
+python protectme.py example.py
+```
