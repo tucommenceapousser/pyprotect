@@ -21,7 +21,7 @@ VERIFIER_TEMPLATE = r"""
 @@MARKER_START@@
 # Auto-injected signature verifier (v1)
 # This verifier checks that the signature file @@SIG_FILENAME@@ matches this file's content
-import os, sys, tempfile, subprocess, base64
+import os, sys, tempfile, subprocess, base64, shutil
 
 _pub_pem_b64 = r'''@@PUB_B64@@'''
 _sig_b64     = r'''@@SIG_B64@@'''
