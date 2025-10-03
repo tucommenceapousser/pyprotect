@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-# protectme_v4.py — reliable sign & inject (normalize-consistent, sign-before-inject)
-# Usage:
-#  interactive: python3 protectme_v4.py
-#  non-interactive:
-#    python3 protectme_v4.py --generate-keys priv.pem pub.pem
-#    python3 protectme_v4.py --sign-inject priv.pem pub.pem target.py
-#    python3 protectme_v4.py --remove target.py
-# Notes: requires openssl on PATH for signing; runtime verification prefers cryptography if installed.
-
+# protectme.py — reliable sign & inject (v4 corrected delimiters)
 from __future__ import annotations
 import os, sys, re, subprocess, tempfile, base64, shutil, stat
 
@@ -17,10 +9,10 @@ MARKER_END_TXT   = "# -- END SIGNATURE VERIFIER v4 --\n"
 MARKER_START = MARKER_START_TXT.encode("utf-8")
 MARKER_END   = MARKER_END_TXT.encode("utf-8")
 
-# verifier template (text). Use @@TOKENS@@ and then replace.
-VERIFIER_TEMPLATE = r'''
+# verifier template (outer uses triple double quotes to allow inner triple-single safely)
+VERIFIER_TEMPLATE = r"""
 @@MARKER_START@@
-# Auto-injected signature verifier (v4) — inserted by protectme_v4.py
+# Auto-injected signature verifier (v4) — inserted by protectme.py
 import os, sys, tempfile, base64, shutil
 
 _pub_b64 = r'''@@PUB_B64@@'''
@@ -99,7 +91,7 @@ def _run_check():
 # run the check immediately
 _run_check()
 @@MARKER_END@@
-'''.lstrip()
+""".lstrip()
 
 # ---------------- utilities ----------------
 
@@ -115,7 +107,6 @@ def run_cmd(cmd, check=True, capture=False):
         return None
 
 def normalize_bytes(b: bytes) -> bytes:
-    # exact same normalization as verifier _normalize()
     if b.startswith(b'\xef\xbb\xbf'):
         b = b[3:]
     b = b.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
@@ -160,7 +151,7 @@ def sign_normalized(priv_path: str, data: bytes) -> bytes:
     tf.write(data); tf.flush(); tf.close()
     sig_tf = tempfile.NamedTemporaryFile(delete=False)
     sig_tf.close()
-    cmd = ["openssl", "dgst", "-sha256", "-sign", priv_path, "-out", sig_tf.name, tf.name]
+    cmd = ["openssl","dgst","-sha256","-sign",priv_path,"-out",sig_tf.name,tf.name]
     print("Running:", " ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -171,7 +162,6 @@ def sign_normalized(priv_path: str, data: bytes) -> bytes:
     return sig
 
 def verify_signature_bytes(pub_pem: bytes, sig: bytes, data: bytes) -> bool:
-    # try cryptography
     try:
         from cryptography.hazmat.primitives.serialization import load_pem_public_key
         from cryptography.hazmat.primitives.asymmetric import padding
@@ -181,7 +171,6 @@ def verify_signature_bytes(pub_pem: bytes, sig: bytes, data: bytes) -> bool:
         return True
     except Exception:
         pass
-    # fallback to openssl
     if not shutil.which("openssl"):
         return False
     with tempfile.NamedTemporaryFile(delete=False) as tf_pub:
@@ -202,20 +191,17 @@ def inject_signed(pub_path: str, priv_path: str, target: str, verbose=False) -> 
     if not os.path.exists(priv_path):
         print("Private key missing:", priv_path); return False
 
-    # read normalized bytes of target (removes any existing block)
     try:
         normalized = read_without_block_bytes(target)
     except Exception as e:
         print("Error reading target without block:", e); return False
 
-    # sign normalized bytes
     try:
         sig = sign_normalized(priv_path, normalized)
     except Exception as e:
         print("Signing failed:", e); return False
 
     pub_pem = open(pub_path, "rb").read()
-    # quick sanity verify
     if not verify_signature_bytes(pub_pem, sig, normalized):
         print("Sanity verify FAILED after signing. Aborting injection."); return False
 
@@ -231,7 +217,6 @@ def inject_signed(pub_path: str, priv_path: str, target: str, verbose=False) -> 
     verifier = verifier.replace("@@MARKER_END_TEXT@@", MARKER_END_TXT.rstrip("\n"))
     verifier_full = verifier + "\n"
 
-    # insert after shebang and encoding line if present
     original_raw = open(target, "rb").read()
     try:
         s = original_raw.decode("utf-8", errors="surrogateescape")
@@ -243,7 +228,6 @@ def inject_signed(pub_path: str, priv_path: str, target: str, verbose=False) -> 
             insert_at += 1
         prefix = "".join(lines[:insert_at]).encode("utf-8")
         suffix = "".join(lines[insert_at:]).encode("utf-8")
-        # strip previous block inside suffix if present
         si = suffix.find(MARKER_START)
         if si != -1:
             ei = suffix.find(MARKER_END, si)
@@ -253,7 +237,6 @@ def inject_signed(pub_path: str, priv_path: str, target: str, verbose=False) -> 
     except Exception:
         new_bytes = verifier_full.encode("utf-8") + original_raw
 
-    # backup and write
     bak = target + ".bak"
     try:
         open(bak, "wb").write(original_raw)
@@ -289,7 +272,7 @@ def remove_block(target: str) -> bool:
 # ---------------- CLI / interactive ----------------
 
 def interactive():
-    print("=== protectme_v4 interactive ===")
+    print("=== protectme v4 interactive ===")
     while True:
         print("\nActions:")
         print(" 1) generate keys (openssl)")
@@ -323,7 +306,7 @@ def interactive():
 
 def parse_cli():
     import argparse
-    p = argparse.ArgumentParser(prog="protectme_v4.py")
+    p = argparse.ArgumentParser(prog="protectme.py")
     p.add_argument("--generate-keys", nargs=2, metavar=("PRIV","PUB"), help="generate keys (non-interactive)")
     p.add_argument("--sign-inject", nargs=3, metavar=("PRIV","PUB","FILE"), help="sign target (without block) and inject verifier")
     p.add_argument("--remove", nargs=1, metavar=("FILE"), help="remove verifier block from FILE")
