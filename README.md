@@ -1,21 +1,40 @@
 # pyprotect
+
 Protect your files by trhacknon
-inject_protector.py
+protectme.py
 
-Usage:
-  ```bash
-  python protectme.py <fichier_local.py> <url_fichier_distant>
-  ```
+![trhacknon](https://d.top4top.io/p_3562cc2790.jpg)
 
-  ```bash
-  python protectme.py --remove <fichier_local.py>
-  ```
 
-Le protecteur compare le code local* (hors bloc protecteur) avec le code distant.
-*Le fichier distant doit contenir le code original sans bloc protecteur.
+# Usage:
 
-## Example
+## 1) rendre le script exécutable (optionnel)
 
 ```bash
-python protectme.py example.py https://raw.githubusercontent.com/tucommenceapousser/pyprotect/refs/heads/main/example.py
+chmod +x protectme.py
+```
+
+## 2) (re)générer clés si besoin
+
+```bash
+python3 protectme.py --generate-keys priv.pem pub.pem
+```
+
+## 3) assurer que example.py n'a pas déjà un bloc ou le retirer
+
+```bash
+python3 protectme.py --remove example.py || true
+```
+
+
+## 4) signer & append
+
+```bash
+python3 protectme.py --sign-inject priv.pem pub.pem example.py
+```
+
+## 5) tester
+
+```bash
+python3 example.py
 ```
